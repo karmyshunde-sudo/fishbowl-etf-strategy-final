@@ -1,11 +1,11 @@
 {
   "name": "fishbowl-etf-strategy",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "基于鱼盆模型的ETF策略系统（支持Node.js与Python桥接）",
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "deploy": "npx wrangler@1.21.0 publish",
+    "deploy": "npx @cloudflare/wrangler@1.21.0 publish",
     "predeploy": "npm run validate",
     "validate": "node -e \"require('./config.js'); require('./poolManager.js')\" && echo '配置验证通过'",
     "test:bridge": "python3 akshare_etf_fetcher.py && echo 'Python桥接脚本测试通过'",
