@@ -1,7 +1,9 @@
 # Workers应用名称（需唯一）
 # wrangler.toml
 name = 'fishbowl-etf-strategy-final'
-
+# wrangler.toml (wrangler v3.88.0^)
+[observability.logs]
+enabled = true
 # 主入口文件
 main = "main.js"
 
@@ -16,3 +18,4 @@ crons = [
   "0 8 * * 5"     # 北京时间16:00（UTC 8:00）周五强制更新股票池
 
 ]
+
