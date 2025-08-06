@@ -1,5 +1,6 @@
 # Workers应用名称（需唯一）
-name = "fishbowl-etf-strategy"
+# wrangler.toml
+name = 'fishbowl-etf-strategy-final'
 
 # 主入口文件
 main = "main.js"
@@ -13,4 +14,5 @@ crons = [
   "0 3 * * 1-5",  # 北京时间11:00（UTC 3:00）推送股票池（周一至周五）
   "0 6 * * 1-5",  # 北京时间14:00（UTC 6:00）执行策略（周一至周五）
   "0 8 * * 5"     # 北京时间16:00（UTC 8:00）周五强制更新股票池
+
 ]
