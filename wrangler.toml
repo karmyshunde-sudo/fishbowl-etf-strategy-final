@@ -5,13 +5,28 @@ name = "fishbowl-etf-strategy-final"
 main = "main.js"
 
 # 兼容性日期（必须使用当前或过去的日期，不能是未来时间）
-# 当前部署日期为2025-08-06，使用此日期确保兼容
 compatibility_date = "2025-08-06"
 
-# 日志配置（Wrangler v4.28.0无需嵌套在[worker]下，直接顶级配置）
+# 构建配置（支持Python桥接脚本部署）
+[build]
+command = "npm install && cp akshare_etf_fetcher.py ./dist/"
+[build.upload]
+format = "service-worker"
+include = ["akshare_etf_fetcher.py"]
+exclude = ["*.pyc", "__pycache__/"]
+
+# 环境变量配置（与Python桥接逻辑联动）
+[vars]
+PYTHON_BRIDGE_SCRIPT = "akshare_etf_fetcher.py"
+PYTHON_EXEC_TIMEOUT = 20000
+BRIDGE_LOG_TAG = "[Python桥接]"
+
+# 日志配置
 [observability.logs]
 enabled = true
-level = "info"  # 可选级别：debug/info/warn/error
+level = "info"
+[observability.logs.event_rules]
+bridge_operations = { filter = "event.message contains BRIDGE_LOG_TAG", sample_rate = 1.0 }
 
 # 定时触发器配置（UTC时间，对应北京时间-8小时）
 [triggers]
@@ -20,3 +35,13 @@ crons = [
   "0 6 * * 1-5",  # 北京时间14:00执行策略
   "0 8 * * 5"     # 北京时间16:00周五更新股票池
 ]
+
+# 运行时配置
+[runtime]
+memory = 256
+persistent_connections = true
+
+# 开发环境配置
+[dev]
+[dev.vars]
+PYTHON_EXEC_TIMEOUT = 10000
