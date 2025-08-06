@@ -3,7 +3,7 @@ import { CONFIG } from "./config.js";
 
 // 每日推送状态（避免重复推送，PDF4-2节执行控制机制）
 let dailyStatus = {
-  poolPushed: false,      // 股票池是否已推送（每日仅推1次）
+  poolPushed: false,      // ETF池是否已推送（每日仅推1次）
   strategyPushed: false   // 策略结果是否已推送（每日仅推1次）
 };
 
@@ -13,7 +13,6 @@ let dailyStatus = {
  */
 function resetDailyStatus() {
   const now = new Date(Date.now() + CONFIG.TIMEZONE_OFFSET);
-  // 每天0点整重置状态（精确到小时，避免频繁判断）
   if (now.getHours() === 0) { 
     dailyStatus = { poolPushed: false, strategyPushed: false };
     console.log("每日推送状态已重置（符合PDF4-3节周期控制要求）");
@@ -27,7 +26,6 @@ function resetDailyStatus() {
  * @returns {number} 消息长度（字节数）
  */
 function getMessageLength(str) {
-  // 使用TextEncoder计算UTF-8字节长度，与企业微信计数一致
   return new TextEncoder().encode(str).length;
 }
 
@@ -38,12 +36,11 @@ function getMessageLength(str) {
  * @returns {string} 截断后的安全内容（含截断提示）
  */
 function truncateMessage(content) {
-  const MAX_LENGTH = 2048; // 企业微信官方限制
+  const MAX_LENGTH = 2048;
   if (getMessageLength(content) <= MAX_LENGTH) {
-    return content; // 未超限直接返回
+    return content;
   }
 
-  // 二分法精准截断（避免暴力截断导致的乱码）
   let start = 0;
   let end = content.length;
   while (start < end) {
@@ -56,57 +53,49 @@ function truncateMessage(content) {
     }
   }
 
-  // 保留核心内容并添加截断提示（提升用户体验）
   const safeContent = content.slice(0, start);
-  return `${safeContent}\n\n【内容已截断，完整信息见后续消息】`;
+  const truncatedContent = `${safeContent}\n\n【内容已截断，完整信息见后续消息】`;
+  console.log(`消息超长处理：原始${getMessageLength(content)}字节 → 截断后${getMessageLength(truncatedContent)}字节`);
+  return truncatedContent;
 }
 
 /**
  * 发送单条消息到企业微信（基础通信函数，PDF4-1节消息通道）
- * 包含完整错误处理与日志记录，确保可追溯
  * @param {string} content - 消息内容（自动处理超长情况）
  * @returns {boolean} 发送是否成功
  */
 export async function sendMessage(content) {
-  resetDailyStatus(); // 先检查是否需要重置每日状态（PDF4-3节周期控制）
+  resetDailyStatus();
   
-  // 生成标准北京时间字符串（带年月日时分秒，PDF4-4节时间规范）
   const beijingTime = new Date(Date.now() + CONFIG.TIMEZONE_OFFSET)
     .toLocaleString("zh-CN", { 
-      year: "numeric", 
-      month: "2-digit", 
-      day: "2-digit", 
-      hour: "2-digit", 
-      minute: "2-digit", 
-      second: "2-digit",
+      year: "numeric", month: "2-digit", day: "2-digit", 
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
       hour12: false 
     });
   
-  // 拼接完整消息（带系统时间，便于追溯，PDF4-4节日志规范）
   let fullContent = `CF系统时间：${beijingTime}\n${content}`;
-  
-  // 处理超长消息（自动截断，符合PDF4-5节长度限制）
   fullContent = truncateMessage(fullContent);
   
+  console.log(`准备发送消息（长度${getMessageLength(fullContent)}字节）：${fullContent.substring(0, 100)}...`);
+  
   try {
-    // 发送POST请求到企业微信机器人接口
     const response = await fetch(CONFIG.WEBHOOK_URL, {
       method: "POST",
       headers: { 
-        "Content-Type": "application/json; charset=utf-8", // 强制UTF-8编码
-        "User-Agent": "Mozilla/5.0" // 模拟浏览器请求，避免接口拦截
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
       },
       body: JSON.stringify({
         msgtype: "text",
-        text: { content: fullContent } // 严格匹配企业微信文本消息格式
+        text: { content: fullContent }
       }),
-      timeout: 10000 // 10秒超时控制（避免长期阻塞，PDF5-3节超时策略）
+      timeout: 10000
     });
     
-    // 解析响应结果（企业微信返回JSON格式，含错误码）
     const result = await response.json();
+    console.log(`企业微信接口返回：${JSON.stringify(result)}`);
     
-    // 检查接口返回状态（错误码0为成功，PDF4-6节错误处理）
     if (result.errcode !== 0) {
       throw new Error(`微信接口错误（${result.errcode}）：${result.errmsg}`);
     }
@@ -114,121 +103,168 @@ export async function sendMessage(content) {
     console.log("单条消息发送成功（内容长度：" + getMessageLength(fullContent) + "）");
     return true;
   } catch (e) {
-    console.error("单条消息发送失败：" + e.message);
-    return false; // 失败时返回false，由调用方决定是否重试
+    console.error("单条消息发送失败：" + e.message + "（完整内容前100字符：" + fullContent.substring(0, 100) + "）");
+    return false;
   }
 }
 
 /**
- * 推送股票池消息（逐条发送，带间隔控制，PDF1-12节信息发布规范）
- * 每日仅推送1次，每条间隔1分钟避免触发频率限制
- * @param {Array} pool - 股票池数据（含code/name/price/change/type字段）
+ * 推送ETF池消息（单条ETF对应一条消息，严格1分钟间隔）
+ * @param {Array} pool - ETF池数据
+ * @returns {Object} 推送结果（{success: boolean, total: number, successCount: number, failedCount: number}）
  */
 export async function pushPool(pool) {
-  // 检查是否已推送（避免重复，PDF4-2节执行控制）
+  // 结果对象新增明确统计字段，便于清晰反馈推送情况
+  const result = {
+    success: false,
+    total: pool.length,
+    successCount: 0,
+    failedCount: 0,
+    reason: ""
+  };
+  
+  // 检查是否已推送（避免重复执行）
   if (dailyStatus.poolPushed) {
-    console.log("今日股票池已推送，跳过本次执行（符合每日1次规则）");
-    return;
+    result.reason = "今日ETF池已完成推送，本次跳过";
+    console.log(`pushPool：${result.reason}`);
+    return result;
   }
   
-  // 验证股票池数据有效性（避免空数据推送，PDF2-3节数据校验）
+  // 验证ETF池数据有效性
   if (!Array.isArray(pool) || pool.length === 0) {
-    console.error("股票池数据无效（空数组或非数组），取消推送");
-    return;
+    result.reason = "ETF池数据无效（非数组或为空）";
+    console.error(`pushPool：${result.reason}`);
+    return result;
   }
   
   try {
-    // 逐条推送股票池信息（用户易读，PDF4-1节消息展示规范）
+    // 前置提示消息（告知用户单条推送规则）
+    const prefixContent = `【ETF池推送通知】\n本次共${pool.length}只ETF，将按单条消息推送，每条间隔1分钟，请留意接收。`;
+    const prefixSuccess = await sendMessage(prefixContent);
+    if (!prefixSuccess) {
+      result.reason = "前置提示消息发送失败（不影响后续ETF推送）";
+      console.warn(`pushPool：${result.reason}`);
+    } else {
+      console.log("pushPool：前置提示消息发送成功");
+      // 前置消息后也间隔1分钟，避免与第一条ETF消息连续发送
+      console.log("pushPool：等待1分钟后开始推送第一条ETF");
+      await new Promise(resolve => setTimeout(resolve, 60000));
+    }
+    
+    // 逐条推送ETF（单条消息对应一只ETF，严格1分钟间隔）
     for (const [index, etf] of pool.entries()) {
-      // 验证单条ETF数据完整性（避免字段缺失导致的展示异常）
+      // 跳过无效数据，不占用推送间隔
       if (!etf.code || !etf.name || isNaN(etf.price) || isNaN(etf.change)) {
-        console.warn(`第${index + 1}条ETF数据不完整，跳过推送`);
+        result.failedCount++;
+        console.warn(`pushPool：第${index + 1}条ETF数据不完整（code: ${etf.code || '空'}），已跳过`);
         continue;
       }
       
-      // 构建标准化消息内容（突出核心字段，PDF1-12节信息优先级）
-      const content = `【股票池 ${index + 1}/${pool.length}】\n` +
+      // 构建单条ETF消息内容（保持信息完整且简洁）
+      const content = `【ETF详情 ${index + 1}/${pool.length}】\n` +
         `代码：${etf.code}\n` +
         `名称：${etf.name}\n` +
-        `价格：${etf.price.toFixed(2)}元\n` +
-        `涨跌幅：${etf.change.toFixed(2)}%\n` +
-        `类型：${etf.type || "未知"}`;
+        `净值：${etf.price.toFixed(2)}元\n` +
+        `波动幅度：${etf.change.toFixed(2)}%\n` +
+        `类别：${etf.type || "综合"}`;
       
-      // 发送单条消息（自动处理超长情况）
+      // 发送当前ETF消息
       const success = await sendMessage(content);
-      if (!success) {
-        console.warn(`第${index + 1}条股票池消息发送失败，继续下一条`);
+      if (success) {
+        result.successCount++;
+        console.log(`pushPool：第${index + 1}条ETF推送成功（${etf.code}）`);
+      } else {
+        result.failedCount++;
+        console.warn(`pushPool：第${index + 1}条ETF推送失败（${etf.code}）`);
       }
       
-      // 间隔1分钟（60000毫秒），规避企业微信频率限制（PDF4-5节）
-      if (index < pool.length - 1) { // 最后一条不间隔
+      // 非最后一条ETF则等待1分钟（严格执行间隔）
+      if (index < pool.length - 1) {
+        const nextIndex = index + 2;
+        console.log(`pushPool：等待1分钟后推送第${nextIndex}条ETF（当前进度：${index + 1}/${pool.length}）`);
         await new Promise(resolve => setTimeout(resolve, 60000));
       }
     }
     
-    // 全部发送完成后标记状态（确保每日仅1次，PDF4-2节）
+    // 推送完成后更新状态
     dailyStatus.poolPushed = true;
-    console.log(`股票池推送完成（共${pool.length}条，符合每日1次规则）`);
+    result.success = result.successCount > 0; // 只要有成功就视为整体推送有效
+    result.reason = `推送完成（总${result.total}条，成功${result.successCount}条，失败${result.failedCount}条）`;
+    console.log(`pushPool：${result.reason}`);
+    return result;
   } catch (e) {
-    console.error("股票池推送异常中断：" + e.message);
-    // 异常时不标记为已推送，允许后续重试（容错机制，PDF5-2节）
+    result.reason = `推送过程异常中断：${e.message}`;
+    console.error(`pushPool：${result.reason}`);
+    return result;
   }
 }
 
 /**
- * 推送策略结果消息（逐条发送，带间隔控制，PDF3-5节策略输出规范）
- * 每日仅推送1次，支持无操作建议场景
- * @param {Array} results - 策略建议数组（含operation/code/name等字段）
+ * 推送策略结果消息（保持单条推送与间隔逻辑）
+ * @param {Array} results - 策略建议数组
+ * @returns {Object} 推送结果
  */
 export async function pushStrategyResults(results) {
-  // 检查是否已推送（避免重复，PDF4-2节执行控制）
+  const result = {
+    success: false,
+    total: results.length,
+    successCount: 0,
+    failedCount: 0,
+    reason: ""
+  };
+  
   if (dailyStatus.strategyPushed) {
-    console.log("今日策略结果已推送，跳过本次执行（符合每日1次规则）");
-    return;
+    result.reason = "今日策略结果已推送，本次跳过";
+    console.log(`pushStrategyResults：${result.reason}`);
+    return result;
   }
   
   try {
-    // 处理无操作建议场景（明确告知用户，PDF3-5节空结果处理）
     if (!Array.isArray(results) || results.length === 0) {
-      await sendMessage("【策略执行结果】\n本次无操作建议（市场条件未触发交易信号）");
-      dailyStatus.strategyPushed = true;
-      console.log("无策略结果，已推送空操作提示");
-      return;
+      const success = await sendMessage("【策略执行结果】\n当前市场条件下，暂未生成调整建议");
+      result.success = success;
+      result.successCount = success ? 1 : 0;
+      result.failedCount = success ? 0 : 1;
+      dailyStatus.strategyPushed = success;
+      console.log(`pushStrategyResults：无调整建议推送${success ? "成功" : "失败"}`);
+      return result;
     }
     
-    // 逐条推送策略建议（用户易读，PDF4-1节消息展示规范）
+    // 策略结果也按单条推送，保持1分钟间隔
     for (const [index, res] of results.entries()) {
-      // 验证单条策略数据完整性（避免字段缺失）
       if (!res.operation || !res.code || !res.name || isNaN(res.price)) {
-        console.warn(`第${index + 1}条策略数据不完整，跳过推送`);
+        result.failedCount++;
+        console.warn(`pushStrategyResults：第${index + 1}条数据不完整，已跳过`);
         continue;
       }
       
-      // 构建标准化消息内容（突出操作类型和原因，PDF3-5节）
-      const content = `【${res.type || "策略"}操作 ${index + 1}/${results.length}】\n` +
-        `${res.operation} ${res.code} ${res.name}\n` +
-        `价格：${res.price.toFixed(2)}元\n` +
-        `数量：${res.shares || "未知"}份\n` +
-        `金额：${res.amount || "未知"}元\n` +
-        `原因：${res.reason || "无详细原因"}`;
+      const content = `【${res.type || "配置"}调整 ${index + 1}/${results.length}】\n` +
+        `${res.operation === "买入" ? "纳入" : "调出"} ${res.code} ${res.name}\n` +
+        `净值：${res.price.toFixed(2)}元\n` +
+        `份额：${res.shares || "适量"}\n` +
+        `规模：${res.amount || "适中"}\n` +
+        `依据：${res.reason || "市场趋势分析"}`;
       
-      // 发送单条消息（自动处理超长情况）
       const success = await sendMessage(content);
-      if (!success) {
-        console.warn(`第${index + 1}条策略消息发送失败，继续下一条`);
+      if (success) {
+        result.successCount++;
+      } else {
+        result.failedCount++;
       }
       
-      // 间隔1分钟，规避频率限制（PDF4-5节）
-      if (index < results.length - 1) { // 最后一条不间隔
+      if (index < results.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 60000));
       }
     }
     
-    // 全部发送完成后标记状态（确保每日仅1次）
     dailyStatus.strategyPushed = true;
-    console.log(`策略结果推送完成（共${results.length}条，符合每日1次规则）`);
+    result.success = result.successCount > 0;
+    result.reason = `推送完成（总${result.total}条，成功${result.successCount}条）`;
+    console.log(`pushStrategyResults：${result.reason}`);
+    return result;
   } catch (e) {
-    console.error("策略结果推送异常中断：" + e.message);
-    // 异常时不标记为已推送，允许后续重试（容错机制，PDF5-2节）
+    result.reason = `执行异常：${e.message}`;
+    console.error(`pushStrategyResults：${result.reason}`);
+    return result;
   }
 }
