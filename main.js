@@ -1,40 +1,68 @@
-// 导入核心模块
 import { CONFIG } from "./config.js";
 import { getPool } from "./poolManager.js";
-import { executeStrategy } from "./strategy.js";
-import { pushPool, pushStrategyResults } from "./messageSender.js";
+import { executeStrategy, resetAllHoldings } from "./strategy.js";
+import { pushPool, pushStrategyResults, sendMessage } from "./messageSender.js";
+import { printTradeHistory, getCurrentPool, recordTrade } from "./testUtils.js";
 
-/**
- * Cloudflare Workers入口函数
- * @param {Request} request - 触发请求
- * @returns {Response} 响应
- */
 export default {
   async fetch(request) {
     try {
-      // 计算当前北京时间的小时数（0-23）
+      const url = new URL(request.url);
+      const testType = url.searchParams.get("test");
+
+      // 测试场景1：打印建议交易流水
+      if (testType === "print流水") {
+        const history = printTradeHistory();
+        return new Response(`交易流水:\n${JSON.stringify(history, null, 2)}`, {
+          headers: { "Content-Type": "text/plain" }
+        });
+      }
+
+      // 测试场景2：手动推送当前股票池
+      if (testType === "push股票池") {
+        const pool = await getPool();
+        await pushPool(pool);
+        return new Response("股票池已手动推送至企业微信", {
+          headers: { "Content-Type": "text/plain" }
+        });
+      }
+
+      // 测试场景3：触发一次策略执行并推送结果
+      if (testType === "run策略") {
+        const results = await executeStrategy();
+        await pushStrategyResults(results);
+        return new Response("策略已执行，结果已推送", {
+          headers: { "Content-Type": "text/plain" }
+        });
+      }
+
+      // 测试场景4：重置所有持仓（方便重复测试）
+      if (testType === "重置持仓") {
+        resetAllHoldings();
+        return new Response("所有持仓已重置", {
+          headers: { "Content-Type": "text/plain" }
+        });
+      }
+
+      // 原有定时任务逻辑
       const beijingHour = new Date(
         Date.now() + CONFIG.TIMEZONE_OFFSET
       ).getHours();
       
-      // 11点推送股票池
       if (beijingHour === CONFIG.STRATEGY_TIMES.PUSH_POOL) {
         const pool = await getPool();
         await pushPool(pool);
         return new Response("股票池推送完成");
       }
       
-      // 14点执行策略并推送结果
       if (beijingHour === CONFIG.STRATEGY_TIMES.CHECK_STRATEGY) {
         const results = await executeStrategy();
         await pushStrategyResults(results);
         return new Response("策略执行及推送完成");
       }
       
-      // 非执行时间返回提示
       return new Response("未到指定执行时间", { status: 200 });
     } catch (e) {
-      // 捕获所有错误，避免程序中断
       console.error("主程序错误：", e.message);
       return new Response(`执行错误：${e.message}`, { status: 500 });
     }
