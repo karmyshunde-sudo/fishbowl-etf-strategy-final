@@ -306,12 +306,12 @@ async function fetchAkShareApi(source, requestId) {
       const exchange = symbol.startsWith("5") ? "sh" : "sz";
       
       try {
-        // 修复常量赋值错误：使用新变量存储拼接后的代码
+        // 修复常量赋值错误：直接使用新变量传入参数
         const akSymbol = `${exchange}${symbol}`;
         // 获取近30天历史数据（计算夏普比率等指标）
         const history = await ak.fund_etf_hist_sina(
-          symbol = akSymbol,  // 使用新变量避免重新赋值常量
-          adjust = "qfq" // 前复权
+          akSymbol,  // 直接使用新变量，不修改原常量
+          "qfq"      // 前复权参数单独传入
         );
 
         if (history.length < 20) { // 至少20个交易日数据
