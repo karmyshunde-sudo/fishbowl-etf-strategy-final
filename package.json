@@ -1,31 +1,32 @@
 {
   "name": "fishbowl-etf-strategy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "基于鱼盆模型的ETF策略系统（支持Node.js与Python桥接）",
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "deploy": "wrangler publish",  // 部署命令（与wrangler.toml联动）
-    "predeploy": "npm run validate",  // 部署前验证脚本
-    "validate": "node -e \"require('./config.js'); require('./poolManager.js')\" && echo '配置验证通过'",  // 验证核心文件完整性
-    "test:bridge": "python3 akshare_etf_fetcher.py && echo 'Python桥接脚本测试通过'"  // 单独测试Python桥接脚本
+    "deploy": "npx wrangler@3.57.0 publish",  // 强制指定具体版本执行部署（避免环境缓存影响）
+    "predeploy": "npm run validate",
+    "validate": "node -e \"require('./config.js'); require('./poolManager.js')\" && echo '配置验证通过'",
+    "test:bridge": "python3 akshare_etf_fetcher.py && echo 'Python桥接脚本测试通过'",
+    "clean:cache": "rm -rf node_modules && rm -f package-lock.json"  // 新增：清除依赖缓存
   },
   "dependencies": {
-    "cheerio": "^1.0.0-rc.12",  // HTML解析依赖（东方财富网数据解析必需，PDF1-206节量能数据来源）
-    "node-fetch": "^3.3.2"  // 新增：HTTP请求库（兼容Cloudflare Workers环境，PDF5-1节模块化要求）
+    "cheerio": "1.0.0-rc.12",  // 锁定具体版本（避免^符号导致自动升级）
+    "node-fetch": "3.3.2"
   },
   "devDependencies": {
-    "@cloudflare/wrangler": "^4.28.0",  // 新增：Cloudflare部署工具（确保与wrangler.toml版本兼容）
-    "eslint": "^8.56.0"  // 新增：代码校验工具（生产级代码质量保障，PDF6-1节规范要求）
+    "@cloudflare/wrangler": "3.57.0",  // 移除^符号，锁定精确版本
+    "eslint": "8.56.0"
   },
   "engines": {
-    "node": ">=20.0.0",  // 明确Node.js版本要求（兼容ES模块及最新API）
-    "npm": ">=9.0.0"
+    "node": "20.x",  // 明确限定20.x系列（避免使用22.x可能的兼容性问题）
+    "npm": "9.x"
   },
-  "pythonDependencies": [  // 新增：Python桥接脚本依赖声明（与akshare_etf_fetcher.py对应）
-    "akshare>=1.4.88",  // 核心数据接口（指定最低兼容版本，PDF2-1节推荐数据源）
-    "pandas>=2.1.0",  // 数据处理库（计算夏普比率必需，PDF3-3节评分指标）
-    "numpy>=1.26.0"  // 数值计算库（支持收益率与波动率计算）
+  "pythonDependencies": [
+    "akshare>=1.4.88",
+    "pandas>=2.1.0",
+    "numpy>=1.26.0"
   ],
   "keywords": ["ETF", "策略系统", "鱼盆模型", "跨语言桥接"],
   "author": "",
