@@ -49,3 +49,9 @@ export const CONFIG = {
   // 时区偏移（北京时间=UTC+8）
   TIMEZONE_OFFSET: 8 * 60 * 60 * 1000
 };
+
+// 全局响应头配置（新增，解决中文乱码）
+export const RESPONSE_HEADERS = {
+  "Content-Type": "text/plain; charset=utf-8",
+  "Cache-Control": "no-store" // 禁止缓存，确保测试实时性
+};
