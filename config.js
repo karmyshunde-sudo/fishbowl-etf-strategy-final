@@ -1,5 +1,5 @@
-// 测试首次构建
 // 导出鱼盆模型核心配置，严格匹配PDF中"鱼盆模型"参数
+// 新增Python桥接相关配置，保持与poolManager.js的兼容性
 export const CONFIG = {
   // 企业微信机器人Webhook地址（用户提供的地址）
   // 用于接收策略推送消息，需确保密钥正确（格式：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx）
@@ -27,7 +27,9 @@ export const CONFIG = {
   // 参考PDF第2章"标的选择体系"，平衡稳定性与进攻性
   POOL: {
     SIZE: 10, // 10只ETF（5宽基+5行业，分散配置，PDF1-48节"组合构建原则"）
-    UPDATE_TIME: { weekday: 5, hour: 16 } // 周五16点更新（避开交易时段，PDF1-3节"数据更新机制"）
+    UPDATE_TIME: { weekday: 5, hour: 16 }, // 周五16点更新（避开交易时段，PDF1-3节"数据更新机制"）
+    MAX_AGE: 7 * 24 * 3600 * 1000, // 缓存最大有效期（7天，PDF1-3节性能优化要求）
+    MIN_COUNT: 10 // 最小ETF数量（宽基5+行业5，确保策略有效性，PDF3-1节配置要求）
   },
   
   // 策略执行时间（北京时间，PDF实战案例时间）
@@ -53,14 +55,32 @@ export const CONFIG = {
     { name: "tushare", url: "https://tushare.pro/document/2?doc_id=25" } // 图莎尔，专业财经数据
   ],
   
+  // Python桥接配置（新增，PDF5-4节跨语言调用方案）
+  // 用于Node.js与Python脚本的交互参数控制
+  PYTHON_BRIDGE: {
+    SCRIPT_PATH: "akshare_etf_fetcher.py", // Python脚本路径（与poolManager.js同目录）
+    TIMEOUT: 20000, // 脚本执行超时时间（20秒，与数据源超时保持一致）
+    RETRY_COUNT: 2, // 脚本执行失败重试次数（2次，避免偶发错误）
+    ENCODING: "utf8" // 脚本输出编码（确保中文正常解析）
+  },
+  
+  // 缓存配置（新增，用于持久化存储ETF池数据）
+  // 参考PDF5-2节容灾机制，确保系统在数据源故障时可用
+  CACHE: {
+    NAME: "fishbowl-etf-cache-v1", // 缓存名称（包含版本号，便于更新）
+    EXPIRY: 24 * 3600 * 1000, // 缓存过期时间（24小时，平衡实时性与性能）
+    KEY: "/etf-pool-cache" // 缓存键名（固定标识，便于读取）
+  },
+  
   // 时区偏移（北京时间=UTC+8）
   // 用于将UTC时间转换为北京时间，确保时间判断准确（PDF1-10节"时区处理说明"）
   TIMEZONE_OFFSET: 8 * 60 * 60 * 1000 // 单位：毫秒（8小时×60分×60秒×1000毫秒）
 };
 
-// 全局响应头配置（新增，解决中文乱码）
+// 全局响应头配置（解决中文乱码与缓存问题）
 // 参考PDF第6章"部署优化指南"，确保跨环境显示一致性
 export const RESPONSE_HEADERS = {
   "Content-Type": "text/plain; charset=utf-8", // 强制UTF-8编码，解决中文显示问题
-  "Cache-Control": "no-store" // 禁止缓存，确保测试时获取最新结果（PDF1-156节"缓存控制策略"）
+  "Cache-Control": "no-store", // 禁止缓存，确保测试时获取最新结果（PDF1-156节"缓存控制策略"）
+  "Access-Control-Allow-Origin": "*" // 允许跨域访问（适配前端调用场景，PDF6-2节跨域配置）
 };
