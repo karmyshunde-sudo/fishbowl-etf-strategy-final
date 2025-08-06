@@ -1,444 +1,520 @@
-// 导入配置和数据解析工具（基于PDF中ETF池构建逻辑，整合AkShare数据源）
+// 导入核心依赖（基于PDF5-1节模块化规范，确保依赖最小化）
 import { CONFIG } from "./config.js";
-const cheerio = require("cheerio"); // HTML解析工具（处理开源数据源的HTML格式）
+const cheerio = require("cheerio");
+const { v4: uuidv4 } = require("uuid");
 
-// 缓存当前ETF池 & 最后更新时间（核心状态管理，PDF1-3节性能优化）
-let currentPool = [];
-let lastUpdateTime = 0; // 毫秒级时间戳，用于缓存有效性判断
+// 全局状态管理（PDF1-3节性能优化要求：减少重复计算）
+let currentPool = [];          // 当前ETF池缓存
+let lastUpdateTime = 0;        // 最后更新时间戳（毫秒）
+let isUpdating = false;        // 避免并发更新的锁机制
 
-// 符合"开源免API"的数据源列表（保持4个数据源，优先AkShare，PDF附录A规范）
-const OPEN_SOURCE_DATA_SOURCES = [
-  { 
-    name: "akshare",  
-    url: "https://akshare.akfamily.xyz/data/etf/etf_basic_info.csv", 
-    type: "csv",      
-    requiresApi: false,
-    desc: "AkShare ETF基础信息（用户验证可用，数据规范，PDF2-1节推荐数据源）"
+/**
+ * 数据源配置中心（PDF附录A数据来源规范：主备结合，全市场覆盖）
+ * 优先级：AkShare API > 东方财富网（HTML）
+ */
+const DATA_SOURCES = [
+  {
+    id: "akshare-api",
+    name: "AkShare全市场API",
+    type: "api",
+    timeout: 20000,             // 全市场数据量较大，超时设为20秒
+    retries: 3,                 // 最多重试3次（含首次）
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*"
+    },
+    parser: parseAkShareApiData, // 专用解析函数
+    desc: "AkShare全市场ETF数据接口（无固定列表，策略驱动筛选，PDF2-1节推荐）"
   },
-  { 
-    name: "eastmoney", 
-    url: "https://quote.eastmoney.com/center/list.html#ETF_all", 
+  {
+    id: "eastmoney",
+    name: "东方财富网",
+    url: "https://quote.eastmoney.com/center/list.html#ETF_all",
     type: "html",
-    requiresApi: false,
-    desc: "东方财富网ETF列表（主备份源，PDF推荐的公开数据源）"
-  },
-  { 
-    name: "cfi", 
-    url: "http://etf.cfi.cn/", 
-    type: "html",
-    requiresApi: false,
-    desc: "中金在线ETF大全（备用源2，历史数据完整）"
-  },
-  { 
-    name: "sinafinance",  // 新增新浪财经作为第4个数据源
-    url: "https://finance.sina.com.cn/fund/etf/", 
-    type: "html",
-    requiresApi: false,
-    desc: "新浪财经ETF汇总（备用源3，分类明确，PDF1-4节趋势数据来源）"
+    timeout: 10000,             // HTML页面超时设为10秒
+    retries: 2,                 // 备份源重试2次
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+      "Referer": "https://quote.eastmoney.com/",
+      "Cookie": `device_id=${uuidv4()};` // 动态生成设备ID，规避基础反爬
+    },
+    parser: parseEastMoneyHtml,
+    desc: "东方财富全市场ETF列表（备份源，HTML格式，PDF1-206节量能数据来源）"
   }
 ];
 
 /**
- * 获取ETF池（优化缓存逻辑，避免一周内频繁更新，PDF1-3节更新规则）
+ * 获取ETF池（核心入口函数，PDF1-3节更新机制实现）
  * @param {boolean} forceUpdate - 是否强制更新（测试场景使用）
- * @returns {Array} ETF池数据（副本，避免外部修改缓存）
+ * @returns {Array} 筛选后的ETF池（副本，避免外部修改缓存）
  * @throws {Error} 若所有数据源失败且无缓存时抛出
  */
 export async function getPool(forceUpdate = false) {
-  try {
-    console.log("【步骤1/5】检查是否需要更新ETF池...");
-    
-    // 核心更新条件（严格遵循每周五更新为主，兼顾初始化与测试）
-    // 1. 强制更新 2. 周五16点后（定时窗口）+ 缓存过期/为空 3. 非周五但缓存为空（首次部署）
-    const now = new Date(Date.now() + CONFIG.TIMEZONE_OFFSET);
-    const isFridayWindow = shouldUpdatePool(); // 是否处于周五16点后定时窗口
-    const cacheExpired = Date.now() - lastUpdateTime > 86400000; // 缓存是否过期（24小时）
-    
-    const needUpdate = forceUpdate 
-      || (isFridayWindow && (cacheExpired || currentPool.length === 0)) // 周五窗口内更新条件
-      || (!isFridayWindow && currentPool.length === 0); // 非周五仅空缓存时更新（初始化）
-    
-    if (needUpdate) {
-      console.log("【步骤1/5】需要更新（满足强制更新/周五窗口+过期/首次部署空缓存），开始执行更新流程");
-      currentPool = await updatePool();
-      lastUpdateTime = Date.now(); // 记录最新更新时间
-      console.log(`【步骤1/5】ETF池更新完成，共${currentPool.length}只ETF（符合PDF1-48节10只配置）`);
-    } else {
-      console.log(`【步骤1/5】无需更新，使用缓存的ETF池（${currentPool.length}条，最后更新于${new Date(lastUpdateTime).toLocaleString()}）`);
+  // 避免并发更新（PDF5-3节并发控制要求）
+  if (isUpdating) {
+    console.log("【getPool】已有更新任务在执行，等待完成...");
+    while (isUpdating) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    return [...currentPool]; // 返回副本，避免外部直接修改缓存
-  } catch (e) {
-    console.error(`【步骤1/5】获取ETF池失败：${e.message}`);
-    throw new Error(`获取ETF池失败：${e.message}`);
   }
-}
 
-/**
- * 判断是否需要定时更新ETF池（每周五16点后，PDF1-3节更新机制）
- * @returns {boolean} 是否处于周五16点后的更新窗口
- */
-function shouldUpdatePool() {
   try {
-    const now = new Date(Date.now() + CONFIG.TIMEZONE_OFFSET);
-    const weekday = now.getDay() || 7; // 周日转为7（0=周日，1=周一...6=周六）
-    const isFriday = weekday === CONFIG.POOL.UPDATE_TIME.weekday; // 周五=5（需与CONFIG一致）
-    const isAfter16 = now.getHours() >= CONFIG.POOL.UPDATE_TIME.hour; // 16点后
-    
-    console.log(`【步骤1.1/5】当前时间：${now.toLocaleString()}，是否周五：${isFriday}，是否16点后：${isAfter16}`);
-    return isFriday && isAfter16;
+    const now = Date.now();
+    console.log(`【getPool】当前时间：${new Date(now).toLocaleString()}`);
+
+    // 更新条件判断（PDF1-3节核心规则：周五更新+缓存过期+空池+强制更新）
+    const needUpdate = forceUpdate
+      || currentPool.length === 0                  // 缓存为空（首次部署）
+      || (now - lastUpdateTime > CONFIG.POOL.MAX_AGE)  // 缓存过期（默认7天）
+      || (isFridayAfter16(now) && (now - lastUpdateTime > 86400000)); // 周五16点后每日更新
+
+    if (needUpdate) {
+      console.log("【getPool】满足更新条件，开始执行更新流程...");
+      isUpdating = true;
+      currentPool = await updatePool();
+      lastUpdateTime = now;
+      console.log(`【getPool】更新完成，当前ETF池共${currentPool.length}只`);
+    } else {
+      console.log(`【getPool】使用缓存（最后更新：${new Date(lastUpdateTime).toLocaleString()}，剩余有效期：${Math.round((CONFIG.POOL.MAX_AGE - (now - lastUpdateTime)) / 3600000)}小时）`);
+    }
+
+    return [...currentPool]; // 返回副本，防止外部直接修改缓存
   } catch (e) {
-    console.error(`【步骤1.1/5】判断定时更新时机失败：${e.message}`);
-    return false; // 异常时不触发定时更新，避免流程阻断
+    console.error(`【getPool】获取ETF池失败：${e.message}`);
+    // 若缓存存在，返回缓存（PDF5-2节容灾机制）
+    if (currentPool.length > 0) {
+      console.warn("【getPool】更新失败，返回历史缓存");
+      return [...currentPool];
+    }
+    throw new Error(`获取ETF池失败且无缓存可用：${e.message}`);
+  } finally {
+    isUpdating = false; // 释放更新锁
   }
 }
 
 /**
- * 更新ETF池（宽基5只+行业5只，PDF中"核心-卫星"配置，1-48节）
- * @returns {Array} 新ETF池（符合配置要求的10只ETF）
- * @throws {Error} 若所有数据源失败且无缓存时抛出
+ * 判断是否为周五16点后（PDF1-3节更新时间规则）
+ * @param {number} timestamp - 时间戳（毫秒）
+ * @returns {boolean} 是否满足周五16点后条件
+ */
+function isFridayAfter16(timestamp) {
+  const date = new Date(timestamp + CONFIG.TIMEZONE_OFFSET);
+  const weekday = date.getDay(); // 0=周日，1=周一...5=周五...6=周六
+  const hour = date.getHours();
+  const result = weekday === 5 && hour >= 16; // 周五且16点后
+  console.log(`【isFridayAfter16】当前时间：${date.toLocaleString()}，判断结果：${result}`);
+  return result;
+}
+
+/**
+ * 更新ETF池（核心逻辑，策略驱动全市场筛选）
+ * @returns {Array} 策略筛选后的ETF池（10只：宽基5+行业5）
  */
 async function updatePool() {
   try {
-    console.log("【步骤2/5】开始获取并合并多数据源的ETF数据...");
+    console.log("【updatePool】开始全市场ETF筛选流程...");
     const allEtfs = await fetchAndMergeETFData();
-    console.log(`【步骤2/5】多数据源合并完成，共${allEtfs.length}条原始数据`);
     
-    console.log("【步骤3/5】过滤无效ETF数据...");
-    const validEtfs = allEtfs.filter(etf => {
-      const isValid = !isNaN(etf.price) && etf.price > 0 
-                     && !isNaN(etf.change) 
-                     && !isNaN(etf.volume) && etf.volume > 0;
-      if (!isValid) {
-        console.log(`【步骤3/5】过滤无效数据：${JSON.stringify(etf)}`);
-      }
-      return isValid;
-    });
-    
-    if (validEtfs.length === 0) {
-      throw new Error("【步骤3/5】无有效ETF数据（过滤后数量为0，参考PDF2-3节数据有效性校验）");
+    if (allEtfs.length === 0) {
+      throw new Error("全市场筛选后无有效ETF数据（参考PDF2-3节数据有效性校验）");
     }
-    console.log(`【步骤3/5】过滤完成，有效数据共${validEtfs.length}条`);
-    
-    console.log("【步骤4/5】对有效ETF进行评分排序...");
-    const scoredEtfs = validEtfs
-      .map(etf => ({ ...etf, score: calculateScore(etf) }))
-      .sort((a, b) => b.score - a.score);
-    console.log(`【步骤4/5】评分完成，最高分为${scoredEtfs[0]?.score || 0}分`);
-    
-    console.log("【步骤5/5】筛选宽基和行业ETF各5只...");
-    const wideBase = scoredEtfs.filter(etf => etf.type === "宽基").slice(0, 5);
-    const industry = scoredEtfs.filter(etf => etf.type === "行业").slice(0, 5);
-    
-    console.log(`【步骤5/5】宽基筛选结果：${wideBase.length}只，行业筛选结果：${industry.length}只`);
-    
-    const newPool = [...wideBase, ...industry];
-    if (newPool.length < CONFIG.POOL.SIZE) {
-      throw new Error(`【步骤5/5】ETF池数量不足（实际${newPool.length}只，需${CONFIG.POOL.SIZE}只，参考PDF3-1节）`);
-    }
-    
-    return newPool;
+
+    // 应用最终筛选策略（PDF3-1节配置要求：10只ETF）
+    const finalPool = applySelectionStrategy(allEtfs);
+    console.log(`【updatePool】策略筛选完成，最终ETF池共${finalPool.length}只（宽基${finalPool.filter(e => e.type === "宽基").length}只，行业${finalPool.filter(e => e.type === "行业").length}只）`);
+
+    return finalPool;
   } catch (e) {
-    // 容灾机制：更新失败时回退到缓存（PDF5-2节风险控制）
-    if (currentPool.length > 0) {
-      console.warn(`【容灾触发】更新失败，使用上次缓存的ETF池（原因：${e.message}）`);
-      return currentPool;
-    }
-    throw new Error(`更新ETF池失败（无缓存可用）：${e.message}`);
+    console.error(`【updatePool】更新失败：${e.message}`);
+    throw e;
   }
 }
 
 /**
- * 从多开源数据源获取并合并ETF数据（优先AkShare，PDF5-2节多源备份策略）
- * @returns {Array} 合并去重后的ETF数据
- * @throws {Error} 若所有数据源失败时抛出
+ * 获取并合并多数据源数据（PDF5-2节多源备份策略）
+ * @returns {Array} 去重后的全市场ETF数据
  */
 async function fetchAndMergeETFData() {
-  try {
-    console.log("【步骤2.1/5】筛选可用的开源免API数据源...");
-    const validSources = OPEN_SOURCE_DATA_SOURCES.filter(source => !source.requiresApi);
-    
-    if (validSources.length === 0) {
-      throw new Error("【步骤2.1/5】无可用的开源免API数据源（违反用户要求的数据源规范）");
-    }
-    console.log(`【步骤2.1/5】筛选完成，可用数据源：${validSources.map(s => s.name).join(",")}（优先AkShare）`);
+  const allData = [];
+  let primarySourceSuccess = false;
 
-    const allData = [];
-    let successfulSources = 0; // 记录成功获取数据的数据源数量
-    
-    // 遍历所有数据源（优先处理AkShare，确保用户验证的数据源优先使用）
-    for (const [index, source] of validSources.entries()) {
-      console.log(`【步骤2.2/5】正在获取第${index + 1}个数据源（${source.name}）...`);
-      try {
-        // 根据数据源类型调用不同解析方法
-        const etfData = source.type === "csv" 
-          ? await parseCsvData(await fetchCsvSource(source)) 
-          : await parseETFHtml(source.name, await fetchHtmlSource(source));
-        
-        allData.push(...etfData);
-        successfulSources++;
-        console.log(`【步骤2.2/5】数据源${source.name}获取成功，返回${etfData.length}条数据`);
-        
-        // 已获取2个有效数据源且数据量足够时提前退出
-        if (successfulSources >= 2 && allData.length >= 50) {
-          console.log("【步骤2.2/5】已获取2个有效数据源且数据充足，提前结束获取");
-          break;
-        }
-      } catch (e) {
-        console.error(`【步骤2.2/5】数据源${source.name}获取失败（继续尝试下一个）：${e.message}`);
+  for (const source of DATA_SOURCES) {
+    try {
+      console.log(`【fetchAndMergeETFData】开始获取${source.name}数据...`);
+      const rawData = await fetchSourceData(source);
+      const parsedData = source.parser(rawData, source.id);
+      
+      // 验证解析结果有效性
+      if (parsedData.length === 0) {
+        throw new Error(`解析后无有效数据（可能页面结构变更）`);
+      }
+      
+      allData.push(...parsedData);
+      console.log(`【fetchAndMergeETFData】${source.name}获取成功（${parsedData.length}条）`);
+      
+      // 主数据源成功则终止遍历（PDF5-2节主备切换逻辑）
+      if (source.id === "akshare-api") {
+        primarySourceSuccess = true;
+        break;
+      }
+    } catch (e) {
+      console.error(`【fetchAndMergeETFData】${source.name}处理失败：${e.message}`);
+      // 主数据源失败才尝试备份源
+      if (source.id === "akshare-api") {
+        console.warn(`【fetchAndMergeETFData】主数据源失败，切换至备份源`);
         continue;
       }
-    }
-
-    if (allData.length === 0) {
-      throw new Error("【步骤2.3/5】所有开源数据源均获取失败（需检查网络或数据源是否可访问）");
-    }
-
-    console.log("【步骤2.4/5】对获取的ETF数据进行去重处理...");
-    const uniqueData = [];
-    const seenCodes = new Set();
-    allData.forEach(etf => {
-      if (!seenCodes.has(etf.code)) {
-        seenCodes.add(etf.code);
-        uniqueData.push(etf);
-      } else {
-        console.log(`【步骤2.4/5】去重重复数据：${etf.code} ${etf.name}`);
-      }
-    });
-
-    console.log(`【步骤2.4/5】去重完成，原始${allData.length}条 → 去重后${uniqueData.length}条`);
-    return uniqueData;
-  } catch (e) {
-    throw new Error(`多数据源处理失败：${e.message}`);
-  }
-}
-
-/**
- * 从CSV类型数据源获取原始数据（适配AkShare，新增超时与日志）
- * @param {Object} source - 数据源配置
- * @returns {string} CSV原始文本
- * @throws {Error} 若请求超时、HTTP错误或数据异常时抛出
- */
-async function fetchCsvSource(source) {
-  try {
-    console.log(`【网络诊断】发送请求到${source.url}（超时10秒，CSV格式）`);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // AkShare数据稍大，超时设为10秒
-
-    const response = await fetch(source.url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-        "Accept": "text/csv,application/vnd.ms-excel,*/*"
-      },
-      signal: controller.signal,
-      cf: { tls: "tls1.3" } // 强制TLS1.3，优化Cloudflare兼容性
-    });
-
-    clearTimeout(timeoutId);
-    console.log(`【网络诊断】${source.name}返回状态码：${response.status}`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP请求失败（状态码：${response.status}，状态文本：${response.statusText}）`);
-    }
-
-    const rawCsv = await response.text();
-    console.log(`【网络诊断】${source.name}返回CSV长度：${rawCsv.length}字符`);
-    
-    if (rawCsv.length < 1000) {
-      throw new Error(`返回数据异常（长度：${rawCsv.length}字符），可能被反爬拦截`);
-    }
-
-    return rawCsv;
-  } catch (e) {
-    const errorType = e.name === "AbortError" ? "请求超时" : 
-                     e.message.includes("HTTP请求失败") ? "HTTP错误" : "数据异常";
-    throw new Error(`${errorType}：${e.message}`);
-  }
-}
-
-/**
- * 从HTML类型数据源获取原始数据（拆分后逻辑更清晰）
- * @param {Object} source - 数据源配置
- * @returns {string} HTML原始文本
- * @throws {Error} 若请求超时或网络错误时抛出
- */
-async function fetchHtmlSource(source) {
-  try {
-    console.log(`【网络诊断】发送请求到${source.url}（超时8秒，HTML格式）`);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const response = await fetch(source.url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.google.com/"
-      },
-      signal: controller.signal,
-      cf: { tls: "tls1.3" }
-    });
-
-    clearTimeout(timeoutId);
-    return await response.text();
-  } catch (e) {
-    const errorType = e.name === "AbortError" ? "请求超时" : "网络错误";
-    throw new Error(`${errorType}：${e.message}`);
-  }
-}
-
-/**
- * 解析CSV格式数据（适配AkShare，严格校验字段）
- * @param {string} rawCsv - CSV原始文本
- * @returns {Array} 结构化的ETF数据
- * @throws {Error} 若格式异常或字段缺失时抛出
- */
-function parseCsvData(rawCsv) {
-  try {
-    console.log(`【解析-akshare】开始解析CSV数据...`);
-    const lines = rawCsv.split("\n").filter(line => line.trim() !== "");
-    if (lines.length < 2) { // 至少需要表头+1条数据
-      throw new Error("CSV数据格式异常，无有效内容");
-    }
-
-    // 解析表头（适配AkShare的ETF数据字段）
-    const headers = lines[0].split(",").map(h => h.trim());
-    const codeIndex = headers.indexOf("代码");
-    const nameIndex = headers.indexOf("名称");
-    const priceIndex = headers.indexOf("最新价");
-    const changeIndex = headers.indexOf("涨跌幅");
-    const volumeIndex = headers.indexOf("成交量");
-
-    // 校验必要字段是否存在
-    if (codeIndex === -1 || nameIndex === -1 || priceIndex === -1) {
-      throw new Error(`CSV缺少必要字段（表头：${headers.join(",")}）`);
-    }
-
-    const etfList = [];
-    // 从第2行开始解析数据
-    for (let i = 1; i < lines.length; i++) {
-      const fields = lines[i].split(",");
-      const code = fields[codeIndex]?.trim() || "";
-      const name = fields[nameIndex]?.trim() || "";
-      const price = parseFloat(fields[priceIndex]?.trim() || "0");
-      const change = parseFloat(fields[changeIndex]?.trim() || "0");
-      const volume = parseFloat(fields[volumeIndex]?.trim() || "0");
-      // 判断类型（宽基/行业，根据名称关键字）
-      const type = name.includes("宽基") || ["上证50", "沪深300", "中证500"].some(key => name.includes(key)) 
-        ? "宽基" : "行业";
-
-      if (code && name && code.length === 6) {
-        etfList.push({ code, name, type, price, change, volume, source: "akshare" });
-      } else {
-        console.log(`【解析-akshare】跳过无效数据：code=${code}, name=${name}`);
+      // 所有源失败才抛出
+      if (allData.length === 0) {
+        throw new Error(`所有数据源均失败：${e.message}`);
       }
     }
+  }
 
-    console.log(`【解析-akshare】解析完成，提取${etfList.length}条有效数据`);
-    return etfList;
-  } catch (e) {
-    throw new Error(`akshare CSV解析失败：${e.message}`);
+  // 去重处理（基于代码，保留优先级高的数据源记录）
+  const uniqueData = [];
+  const seenCodes = new Set();
+  allData.forEach(etf => {
+    if (!seenCodes.has(etf.code)) {
+      seenCodes.add(etf.code);
+      uniqueData.push(etf);
+    } else {
+      console.log(`【fetchAndMergeETFData】去重重复代码：${etf.code}（${etf.name}）`);
+    }
+  });
+
+  console.log(`【fetchAndMergeETFData】数据合并完成（原始${allData.length}条 → 去重后${uniqueData.length}条）`);
+  return uniqueData;
+}
+
+/**
+ * 统一数据源请求函数（所有数据源共用，PDF5-1节模块化要求）
+ * @param {Object} source - 数据源配置
+ * @returns {any} 原始响应数据（API返回对象或HTML文本）
+ */
+async function fetchSourceData(source) {
+  const requestId = uuidv4().slice(0, 8); // 短ID用于日志追踪
+  console.log(`【fetchSourceData-${requestId}】开始请求${source.name}（第1次尝试）`);
+
+  for (let attempt = 1; attempt <= source.retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), source.timeout);
+
+    try {
+      // API类型数据源特殊处理（AkShare）
+      if (source.type === "api") {
+        const data = await fetchAkShareApi(source, requestId);
+        clearTimeout(timeoutId);
+        return data;
+      }
+
+      // HTML类型数据源请求
+      const response = await fetch(source.url, {
+        method: "GET",
+        headers: source.headers,
+        signal: controller.signal,
+        cf: { 
+          tls: "tls1.3",        // 强制TLS1.3，优化兼容性
+          cacheTtl: 300         // 5分钟缓存，减轻源站压力
+        }
+      });
+
+      clearTimeout(timeoutId);
+      console.log(`【fetchSourceData-${requestId}】${source.name}第${attempt}次尝试，状态码：${response.status}`);
+
+      if (!response.ok) {
+        // 403反爬时动态更新Cookie
+        if (response.status === 403 && attempt < source.retries) {
+          source.headers.Cookie = `device_id=${uuidv4()};`;
+          console.log(`【fetchSourceData-${requestId}】触发反爬，更新Cookie后重试`);
+          continue;
+        }
+        throw new Error(`HTTP错误 ${response.status}（${response.statusText}）`);
+      }
+
+      const data = await response.text();
+      // 验证数据量（全市场ETF页面应>5000字符）
+      if (data.length < 5000) {
+        throw new Error(`数据量异常（${data.length}字符，可能为反爬页面）`);
+      }
+
+      return data;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      const errorType = e.name === "AbortError" ? "超时" : "请求失败";
+      console.warn(`【fetchSourceData-${requestId}】${source.name}第${attempt}次${errorType}：${e.message}`);
+
+      if (attempt === source.retries) {
+        throw new Error(`${source.name}达到最大重试次数（${source.retries}次）`);
+      }
+
+      // 指数退避重试（1s→2s→4s）
+      const waitTime = 1000 * Math.pow(2, attempt - 1);
+      console.log(`【fetchSourceData-${requestId}】等待${waitTime}ms后重试...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
   }
 }
 
 /**
- * 解析不同HTML数据源的内容，提取ETF数据（新增新浪财经解析逻辑）
- * @param {string} sourceName - 数据源名称
- * @param {string} rawHtml - 原始HTML内容
- * @returns {Array} 结构化的ETF数据
+ * 调用AkShare API获取全市场ETF数据（核心数据源）
+ * @param {Object} source - 数据源配置
+ * @param {string} requestId - 请求ID（用于日志）
+ * @returns {Array} 全市场ETF详细数据
  */
-function parseETFHtml(sourceName, rawHtml) {
+async function fetchAkShareApi(source, requestId) {
   try {
-    const $ = cheerio.load(rawHtml);
-    const etfList = [];
-    console.log(`【解析】开始解析${sourceName}的HTML内容...`);
+    // 步骤1：获取全市场ETF基础列表（无固定筛选）
+    console.log(`【fetchAkShareApi-${requestId}】步骤1/3：获取全市场ETF列表...`);
+    const etfList = await ak.fund_etf_category_sina(); // 全市场分类数据
+    if (etfList.empty) {
+      throw new Error("全市场ETF列表为空（可能API返回格式变更）");
+    }
+    console.log(`【fetchAkShareApi-${requestId}】步骤1/3：获取到${etfList.length}只ETF`);
 
-    switch (sourceName) {
-      case "eastmoney": 
-        $("div.listview > table > tbody > tr:nth-child(n+2)").each((i, el) => {
-          const code = $(el).find("td:nth-child(2)").text().trim();
-          const name = $(el).find("td:nth-child(3)").text().trim();
-          const price = parseFloat($(el).find("td:nth-child(4)").text().trim()) || 0;
-          const change = parseFloat($(el).find("td:nth-child(5)").text().trim()) || 0;
-          const volume = parseFloat($(el).find("td:nth-child(9)").text().trim()) || 0;
-          const type = name.includes("宽基") ? "宽基" : "行业";
+    // 步骤2：初选（流动性筛选，PDF3-2节风险控制）
+    console.log(`【fetchAkShareApi-${requestId}】步骤2/3：执行初选策略...`);
+    const candidateEtfs = etfList
+      .filter(row => {
+        // 成交额>1000万（过滤低流动性）
+        const turnover = parseFloat(row["成交额(万元)"] || 0);
+        return turnover > 1000;
+      })
+      .sort((a, b) => parseFloat(b["涨跌幅(%)"] || 0) - parseFloat(a["涨跌幅(%)"] || 0)) // 按涨幅排序
+      .slice(0, 50); // 取前50只进入详细评估（控制计算量）
 
-          if (code && name && code.length === 6) {
-            etfList.push({ code, name, type, price, change, volume, source: sourceName });
-          }
+    if (candidateEtfs.length === 0) {
+      throw new Error("初选后无符合条件的ETF（流动性不足）");
+    }
+    console.log(`【fetchAkShareApi-${requestId}】步骤2/3：初选完成，候选池${candidateEtfs.length}只`);
+
+    // 步骤3：获取详细历史数据（计算性能指标）
+    console.log(`【fetchAkShareApi-${requestId}】步骤3/3：获取详细数据...`);
+    const detailedData = [];
+    for (const etf of candidateEtfs) {
+      const symbol = etf["代码"].trim();
+      const name = etf["名称"].trim();
+      
+      // 简单判断交易所（上海：5开头；深圳：159/161开头）
+      const exchange = symbol.startsWith("5") ? "sh" : "sz";
+      
+      try {
+        // 获取近30天历史数据（计算夏普比率等指标）
+        const history = await ak.fund_etf_hist_sina(
+          symbol = `${exchange}${symbol}`,
+          adjust = "qfq" // 前复权
+        );
+
+        if (history.length < 20) { // 至少20个交易日数据
+          console.log(`【fetchAkShareApi-${requestId}】${name}(${symbol})数据不足${history.length}天，跳过`);
+          continue;
+        }
+
+        detailedData.push({
+          symbol,
+          name,
+          exchange,
+          history: history,
+          turnover: parseFloat(etf["成交额(万元)"]) // 保留成交额用于策略
         });
-        break;
+      } catch (e) {
+        console.warn(`【fetchAkShareApi-${requestId}】${name}(${symbol})详细数据失败：${e.message}`);
+        continue;
+      }
 
-      case "cfi": 
-        $("div.ETF_list > table > tbody > tr").each((i, el) => {
-          const code = $(el).find("td:nth-child(1)").text().trim();
-          const name = $(el).find("td:nth-child(2)").text().trim();
-          const price = parseFloat($(el).find("td:nth-child(3)").text().trim()) || 0;
-          const change = parseFloat($(el).find("td:nth-child(4)").text().trim()) || 0;
-          const volume = parseFloat($(el).find("td:nth-child(6)").text().trim()) || 0;
-          const type = name.includes("宽基") ? "宽基" : "行业";
-
-          if (code && name && code.length === 6) {
-            etfList.push({ code, name, type, price, change, volume, source: sourceName });
-          }
-        });
-        break;
-
-      case "sinafinance": // 新浪财经解析逻辑
-        $("div#divEtf > table > tbody > tr").each((i, el) => {
-          const code = $(el).find("td:nth-child(1)").text().trim().replace(/[^\d]/g, ""); // 提取数字代码
-          const name = $(el).find("td:nth-child(2)").text().trim();
-          const price = parseFloat($(el).find("td:nth-child(3)").text().trim()) || 0;
-          const change = parseFloat($(el).find("td:nth-child(4)").text().trim()) || 0;
-          const volume = parseFloat($(el).find("td:nth-child(6)").text().trim()) || 0;
-          const type = name.includes("ETF") && !name.includes("行业") ? "宽基" : "行业";
-
-          if (code && name && code.length === 6) {
-            etfList.push({ code, name, type, price, change, volume, source: sourceName });
-          } else {
-            console.log(`【解析-${sourceName}】跳过无效数据：code=${code}, name=${name}`);
-          }
-        });
-        break;
-
-      default:
-        throw new Error(`未实现的数据源解析：${sourceName}`);
+      // 控制请求频率（避免触发API限制）
+      await new Promise(resolve => setTimeout(resolve, 800));
     }
 
-    console.log(`【解析-${sourceName}】解析完成，提取${etfList.length}条有效数据`);
-    return etfList;
+    if (detailedData.length === 0) {
+      throw new Error("详细数据获取失败，候选池为空");
+    }
+    console.log(`【fetchAkShareApi-${requestId}】步骤3/3：详细数据获取完成（${detailedData.length}只）`);
+    return detailedData;
   } catch (e) {
-    throw new Error(`${sourceName}解析失败：${e.message}`);
+    console.error(`【fetchAkShareApi-${requestId}】API调用失败：${e.message}`);
+    throw e;
   }
 }
 
 /**
- * 计算ETF评分（100分制，基于PDF筛选标准，1-25节+1-4节）
- * @param {Object} etf - ETF数据
- * @returns {number} 评分
+ * 应用最终筛选策略（PDF3-1节配置：宽基5+行业5，共10只）
+ * @param {Array} etfData - 候选ETF数据
+ * @returns {Array} 筛选后的ETF池
  */
-function calculateScore(etf) {
-  try {
-    let score = 0;
-    
-    // 1. 流动性评分（30分）
-    const liquidityScore = Math.min(30, etf.volume / 1000000);
-    score += liquidityScore;
-    
-    // 2. 趋势评分（30分）
-    const trendScore = Math.min(30, 10 / (Math.abs(etf.change) + 0.1));
-    score += trendScore;
-    
-    // 3. 价格合理性（20分）
-    const priceScore = etf.price > 0.5 && etf.price < 5 ? 20 : 
-                     etf.price <= 0.5 ? 10 : 15;
-    score += priceScore;
-    
-    // 4. 类型适配性（20分）
-    const typeScore = etf.type === "宽基" ? 20 : 18;
-    score += typeScore;
-    
-    return Math.round(score);
-  } catch (e) {
-    console.error(`【评分】${etf?.code || '未知'}评分失败：${e.message}`);
-    return 0;
+function applySelectionStrategy(etfData) {
+  // 1. 计算每只ETF的策略评分
+  const scoredEtfs = etfData.map(etf => ({
+    ...etf,
+    score: calculateStrategyScore(etf)
+  }));
+
+  // 2. 按评分降序排序
+  const sortedEtfs = scoredEtfs.sort((a, b) => b.score - a.score);
+  console.log(`【applySelectionStrategy】策略评分完成，最高分为${sortedEtfs[0]?.score || 0}分`);
+
+  // 3. 分类筛选（宽基5只，行业5只）
+  const wideBase = sortedEtfs
+    .filter(etf => etf.type === "宽基")
+    .slice(0, 5);
+  
+  const industry = sortedEtfs
+    .filter(etf => etf.type === "行业")
+    .slice(0, 5);
+
+  // 4. 输出筛选结果日志
+  console.log("【applySelectionStrategy】宽基ETF筛选结果：");
+  wideBase.forEach((etf, i) => {
+    console.log(`  ${i+1}. ${etf.name}(${etf.code}) - 评分：${etf.score}，夏普比率：${etf.sharpe.toFixed(2)}`);
+  });
+
+  console.log("【applySelectionStrategy】行业ETF筛选结果：");
+  industry.forEach((etf, i) => {
+    console.log(`  ${i+1}. ${etf.name}(${etf.code}) - 评分：${etf.score}，夏普比率：${etf.sharpe.toFixed(2)}`);
+  });
+
+  return [...wideBase, ...industry];
+}
+
+/**
+ * 策略评分函数（100分制，PDF3-3节评分标准）
+ * 指标权重：夏普比率(40%) + 流动性(30%) + 趋势(20%) + 类型适配(10%)
+ */
+function calculateStrategyScore(etf) {
+  let score = 0;
+
+  // 1. 夏普比率（40分）：越高越好，最高8时得满分
+  const sharpeScore = Math.min(40, etf.sharpe * 5);
+  score += sharpeScore;
+
+  // 2. 流动性（30分）：成交额1亿得满分
+  const liquidityScore = Math.min(30, etf.turnover / 10000 * 30); // 1亿=30分
+  score += liquidityScore;
+
+  // 3. 近期趋势（20分）：涨跌幅正相关
+  const trendScore = Math.min(20, Math.max(0, etf.change * 2)); // 10%涨幅得满分
+  score += trendScore;
+
+  // 4. 类型适配性（10分）：宽基额外加分
+  const typeScore = etf.type === "宽基" ? 10 : 8;
+  score += typeScore;
+
+  return Math.round(score);
+}
+
+/**
+ * AkShare API数据解析函数（转换为标准格式）
+ * @param {Array} detailedData - API返回的详细数据
+ * @param {string} sourceId - 数据源ID
+ * @returns {Array} 标准化的ETF数据
+ */
+function parseAkShareApiData(detailedData, sourceId) {
+  if (!Array.isArray(detailedData)) {
+    throw new Error("AkShare API返回格式异常（非数组）");
   }
+
+  return detailedData.map(item => {
+    // 从历史数据计算性能指标
+    const closePrices = item.history["close"];
+    const returns = closePrices.pct_change().dropna(); // 日收益率
+    
+    // 累计收益率（近1个月）
+    const cumReturn = (1 + returns).prod() - 1;
+    
+    // 年化波动率（252个交易日）
+    const volatility = returns.std() * Math.sqrt(252);
+    
+    // 夏普比率（无风险利率按0计算）
+    const sharpe = volatility > 0 ? cumReturn / volatility : 0;
+    
+    // 最新涨跌幅（%）
+    const latestChange = returns.iloc[returns.length - 1] * 100 || 0;
+
+    return {
+      code: item.symbol,
+      name: item.name,
+      type: 判断ETF类型(item.name),
+      price: parseFloat(closePrices.iloc[closePrices.length - 1]), // 最新价格
+      change: parseFloat(latestChange), // 涨跌幅（%）
+      volume: item.turnover * 10000, // 成交额（元）
+      sharpe: parseFloat(sharpe),
+      turnover: item.turnover, // 成交额（万元，原始值）
+      source: sourceId,
+      timestamp: new Date().toISOString()
+    };
+  }).filter(etf => etf.price > 0); // 过滤无效价格
+}
+
+/**
+ * 东方财富网HTML解析函数（备份源）
+ * @param {string} rawHtml - HTML原始文本
+ * @param {string} sourceId - 数据源ID
+ * @returns {Array} 标准化的ETF数据
+ */
+function parseEastMoneyHtml(rawHtml, sourceId) {
+  const $ = cheerio.load(rawHtml);
+  const etfList = [];
+
+  // 东方财富ETF列表选择器（适配2024年页面结构）
+  $("div#table_wrapper-table > table > tbody > tr").each((i, el) => {
+    // 提取核心字段
+    const code = $(el).find("td:nth-child(2)").text().trim();
+    const name = $(el).find("td:nth-child(3)").text().trim();
+    const price = parseFloat($(el).find("td:nth-child(4)").text().trim() || 0);
+    const change = parseFloat($(el).find("td:nth-child(5)").text().trim() || 0);
+    const volume = parseFloat($(el).find("td:nth-child(9)").text().replace(/,/g, "") || 0) * 1000; // 成交额（万元→元）
+
+    // 过滤无效数据
+    if (!code || !name || price <= 0 || code.length !== 6) {
+      console.log(`【parseEastMoneyHtml】跳过无效数据：${name}(${code})`);
+      return;
+    }
+
+    etfList.push({
+      code,
+      name,
+      type: 判断ETF类型(name),
+      price,
+      change,
+      volume,
+      sharpe: 0, // HTML源无法直接获取，后续策略会忽略
+      turnover: volume / 10000, // 转换为万元
+      source: sourceId,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  console.log(`【parseEastMoneyHtml】解析完成，提取${etfList.length}条有效数据`);
+  return etfList;
+}
+
+/**
+ * 判断ETF类型（宽基/行业，PDF3-1节分类标准）
+ * @param {string} name - ETF名称
+ * @returns {string} 类型（宽基/行业）
+ */
+function 判断ETF类型(name) {
+  const wideBaseKeywords = [
+    "沪深300", "中证500", "上证50", "创业板", 
+    "科创板", "中证1000", "全指", "宽基", "综指"
+  ];
+  return wideBaseKeywords.some(key => name.includes(key)) ? "宽基" : "行业";
+}
+
+// 初始化：尝试从持久化存储加载缓存（若配置了KV存储）
+if (typeof caches !== "undefined") {
+  (async () => {
+    try {
+      const cache = await caches.open(CONFIG.CACHE_NAME);
+      const response = await cache.match("/etf-pool-cache");
+      if (response) {
+        const cachedData = await response.json();
+        currentPool = cachedData.pool;
+        lastUpdateTime = cachedData.timestamp;
+        console.log(`【初始化】从缓存加载ETF池（${currentPool.length}只，最后更新：${new Date(lastUpdateTime).toLocaleString()}）`);
+      }
+    } catch (e) {
+      console.warn(`【初始化】缓存加载失败：${e.message}`);
+    }
+  })();
 }
