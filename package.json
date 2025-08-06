@@ -5,22 +5,22 @@
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "deploy": "npx wrangler@3.57.0 publish",  // 强制指定具体版本执行部署（避免环境缓存影响）
+    "deploy": "npx wrangler@3.57.0 publish",  
     "predeploy": "npm run validate",
     "validate": "node -e \"require('./config.js'); require('./poolManager.js')\" && echo '配置验证通过'",
     "test:bridge": "python3 akshare_etf_fetcher.py && echo 'Python桥接脚本测试通过'",
-    "clean:cache": "rm -rf node_modules && rm -f package-lock.json"  // 新增：清除依赖缓存
+    "clean:cache": "rm -rf node_modules && rm -f package-lock.json"  
   },
   "dependencies": {
-    "cheerio": "1.0.0-rc.12",  // 锁定具体版本（避免^符号导致自动升级）
+    "cheerio": "1.0.0-rc.12",  
     "node-fetch": "3.3.2"
   },
   "devDependencies": {
-    "@cloudflare/wrangler": "3.57.0",  // 移除^符号，锁定精确版本
+    "@cloudflare/wrangler": "3.57.0",  
     "eslint": "8.56.0"
   },
   "engines": {
-    "node": "20.x",  // 明确限定20.x系列（避免使用22.x可能的兼容性问题）
+    "node": "20.x",  
     "npm": "9.x"
   },
   "pythonDependencies": [
@@ -32,3 +32,4 @@
   "author": "",
   "license": "MIT"
 }
+
