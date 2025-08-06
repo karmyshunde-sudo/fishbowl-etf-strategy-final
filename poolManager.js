@@ -1,12 +1,19 @@
-// 导入核心依赖（基于PDF5-1节模块化规范，确保依赖最小化）
+// 导入核心依赖（移除未安装的uuid，使用内置方法生成唯一ID）
 import { CONFIG } from "./config.js";
 const cheerio = require("cheerio");
-const { v4: uuidv4 } = require("uuid");
 
 // 全局状态管理（PDF1-3节性能优化要求：减少重复计算）
 let currentPool = [];          // 当前ETF池缓存
 let lastUpdateTime = 0;        // 最后更新时间戳（毫秒）
 let isUpdating = false;        // 避免并发更新的锁机制
+
+/**
+ * 生成简单唯一ID（替代uuid，避免依赖缺失）
+ * @returns {string} 8位随机字符串
+ */
+function generateRequestId() {
+  return Math.random().toString(36).substring(2, 10);
+}
 
 /**
  * 数据源配置中心（PDF附录A数据来源规范：主备结合，全市场覆盖）
@@ -36,7 +43,7 @@ const DATA_SOURCES = [
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
       "Referer": "https://quote.eastmoney.com/",
-      "Cookie": `device_id=${uuidv4()};` // 动态生成设备ID，规避基础反爬
+      "Cookie": `device_id=${generateRequestId()};` // 使用自定义ID规避反爬
     },
     parser: parseEastMoneyHtml,
     desc: "东方财富全市场ETF列表（备份源，HTML格式，PDF1-206节量能数据来源）"
@@ -193,7 +200,7 @@ async function fetchAndMergeETFData() {
  * @returns {any} 原始响应数据（API返回对象或HTML文本）
  */
 async function fetchSourceData(source) {
-  const requestId = uuidv4().slice(0, 8); // 短ID用于日志追踪
+  const requestId = generateRequestId(); // 使用自定义ID替代uuid
   console.log(`【fetchSourceData-${requestId}】开始请求${source.name}（第1次尝试）`);
 
   for (let attempt = 1; attempt <= source.retries; attempt++) {
@@ -225,7 +232,7 @@ async function fetchSourceData(source) {
       if (!response.ok) {
         // 403反爬时动态更新Cookie
         if (response.status === 403 && attempt < source.retries) {
-          source.headers.Cookie = `device_id=${uuidv4()};`;
+          source.headers.Cookie = `device_id=${generateRequestId()};`; // 更新设备ID
           console.log(`【fetchSourceData-${requestId}】触发反爬，更新Cookie后重试`);
           continue;
         }
@@ -299,9 +306,11 @@ async function fetchAkShareApi(source, requestId) {
       const exchange = symbol.startsWith("5") ? "sh" : "sz";
       
       try {
+        // 修复常量赋值错误：使用新变量存储拼接后的代码
+        const akSymbol = `${exchange}${symbol}`;
         // 获取近30天历史数据（计算夏普比率等指标）
         const history = await ak.fund_etf_hist_sina(
-          symbol = `${exchange}${symbol}`,
+          symbol = akSymbol,  // 使用新变量避免重新赋值常量
           adjust = "qfq" // 前复权
         );
 
