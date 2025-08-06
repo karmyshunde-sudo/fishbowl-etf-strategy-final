@@ -141,7 +141,7 @@ export default {
             break;
           case "pushPool":         // 手动推送ETF池
             console.log("【main.js】开始手动推送ETF池...");
-            const pool = await deps.getPool(true); // 强制更新ETF池
+            const pool = await deps.getPool(true); // 强制更新ETF池（测试场景）
             console.log(`【main.js】获取到ETF池数据（${pool.length}条），开始推送`);
             const pushResult = await deps.pushPool(pool);
             if (pushResult.success) {
