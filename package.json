@@ -1,0 +1,8 @@
+{
+  "name": "fishbowl-etf-strategy",
+  "version": "1.0.0",
+  "description": "基于鱼盆模型的ETF策略系统",
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.12"  # HTML解析依赖（必须）
+  }
+}
