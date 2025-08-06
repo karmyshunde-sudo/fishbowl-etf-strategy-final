@@ -1,27 +1,28 @@
 {
   "name": "fishbowl-etf-strategy",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "基于鱼盆模型的ETF策略系统（支持Node.js与Python桥接）",
   "main": "main.js",
   "type": "module",
   "scripts": {
-    "deploy": "npx wrangler@3.57.0 publish",  
+    "deploy": "npx wrangler@latest publish",  // 使用最新可用版本，避免版本号硬编码
     "predeploy": "npm run validate",
     "validate": "node -e \"require('./config.js'); require('./poolManager.js')\" && echo '配置验证通过'",
     "test:bridge": "python3 akshare_etf_fetcher.py && echo 'Python桥接脚本测试通过'",
-    "clean:cache": "rm -rf node_modules && rm -f package-lock.json"  
+    "clean:cache": "rm -rf node_modules && rm -f package-lock.json && rm -f bun.lockb"  // 清除bun缓存
   },
   "dependencies": {
-    "cheerio": "1.0.0-rc.12",  
+    "cheerio": "1.0.0-rc.12",  // 核心依赖锁定版本，确保功能稳定
     "node-fetch": "3.3.2"
   },
   "devDependencies": {
-    "@cloudflare/wrangler": "3.57.0",  
+    "@cloudflare/wrangler": "*",  // 兼容所有版本，由包管理器自动选择可用版本
     "eslint": "8.56.0"
   },
   "engines": {
-    "node": "20.x",  
-    "npm": "9.x"
+    "node": ">=18.x",  // 放宽版本限制，适配更多环境（18.x及以上均兼容）
+    "npm": ">=8.x",
+    "bun": ">=1.2.0"  // 明确支持bun包管理器（日志显示环境使用bun）
   },
   "pythonDependencies": [
     "akshare>=1.4.88",
@@ -32,4 +33,3 @@
   "author": "",
   "license": "MIT"
 }
-
