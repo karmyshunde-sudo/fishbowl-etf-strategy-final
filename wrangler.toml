@@ -1,16 +1,21 @@
-# Workers应用名称（需唯一）
-name = "fishbowl-etf-strategy"
+# Workers 应用名称（需唯一，与 Cloudflare 控制台一致）
+name = "fishbowl-etf-strategy-final"  
 
-# 主入口文件
-main = "main.js"
+# 主入口文件（指向你的代码入口，如 main.js）
+main = "main.js"  
 
-# 兼容性日期（使用最新稳定版本）
-compatibility_date = "2023-10-01"
+# 兼容性日期（使用最新稳定日期，建议与当前部署时间接近）
+compatibility_date = "2025-08-07"  
 
-# 定时触发器配置（UTC时间，对应北京时间-8小时）
+# 日志配置（启用详细日志，适配 Wrangler 新版规范）
+[worker.observability.logs]
+enabled = true  # 强制开启日志
+level = "info"  # 日志级别：debug/info/warn/error（info 为常用生产级别）
+
+# 定时触发器配置（UTC 时间，根据业务需求调整）
 [triggers]
 crons = [
-  "0 3 * * 1-5",  # 北京时间11:00（UTC 3:00）推送股票池（周一至周五）
-  "0 6 * * 1-5",  # 北京时间14:00（UTC 6:00）执行策略（周一至周五）
-  "0 8 * * 5"     # 北京时间16:00（UTC 8:00）周五强制更新股票池
+  "0 3 * * 1-5",  # 北京时间 11:00（UTC 3:00）推送股票池（周一至周五）
+  "0 6 * * 1-5",  # 北京时间 14:00（UTC 6:00）执行策略（周一至周五）
+  "0 8 * * 5"     # 北京时间 16:00（UTC 8:00）周五强制更新股票池
 ]
