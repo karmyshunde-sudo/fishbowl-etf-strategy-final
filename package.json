@@ -1,6 +1,6 @@
 {
   "name": "fishbowl-etf-strategy",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "基于鱼盆模型的ETF策略系统（支持Node.js与Python桥接）",
   "main": "main.js",
   "type": "module",
