@@ -1,3 +1,4 @@
+//强制触发部署
 // 导入配置（包含时区、响应头、策略执行时间等核心参数，PDF附录B配置规范）
 import { CONFIG, RESPONSE_HEADERS } from "./config.js";
 
@@ -214,3 +215,4 @@ export default {
     }
   }
 };
+
