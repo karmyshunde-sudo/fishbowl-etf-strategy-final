@@ -29,7 +29,8 @@ compatibility_date = "2025-08-06"
 # 新增WRANGLER_CONFIG环境变量，指定配置文件路径
 # command = "export WRANGLER_CONFIG=./wrangler.toml && export CF_API_TOKEN=$CF_API_TOKEN && npm install && cp akshare_etf_fetcher.py ./dist/"
 # command = "export WRANGLER_CONFIG=./wrangler.toml && npm install && cp akshare_etf_fetcher.py ./dist/"
-command = "export WRANGLER_CONFIG=./wrangler.toml && mkdir -p /opt/buildhome/.wrangler/config && cp ./wrangler.toml /opt/buildhome/.wrangler/config/default.toml && npm install && cp akshare_etf_fetcher.py ./dist/"
+# command = "export WRANGLER_CONFIG=./wrangler.toml && mkdir -p /opt/buildhome/.wrangler/config && cp ./wrangler.toml /opt/buildhome/.wrangler/config/default.toml && npm install && cp akshare_etf_fetcher.py ./dist/"
+command = "mkdir -p /opt/buildhome/.wrangler/config && cp ./wrangler.toml /opt/buildhome/.wrangler/config/default.toml && export WRANGLER_CONFIG=./wrangler.toml && npm install && cp akshare_etf_fetcher.py ./dist/"
 
 [build.upload]
 # 输出格式（Cloudflare Workers标准格式）
