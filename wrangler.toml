@@ -1,15 +1,24 @@
 # ==================================================
 # 基础项目配置（PDF6-1节 "Workers项目基础配置规范"）
 # ==================================================
+
 # Workers应用名称（必须与Cloudflare控制台项目名称完全一致）
 # 部署前请确认：Cloudflare控制台 > Workers & Pages > 项目名称
 name = "fishbowl-etf-strategy-final"
+
+# Cloudflare账号ID（解决配置文件缺失的核心参数）
+# 作用：Wrangler通过此ID关联你的账号，生成默认配置文件
+# 获取方式：Cloudflare控制台 > 右上角头像 > 我的个人资料 > 账号ID（32位字符）
+account_id = "72be0b223025ea3d822dd832f5f59f42"  # 例如：a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+
 # 主入口文件（指定应用启动入口，需与项目实际目录结构匹配）
 # 要求：文件存在且导出默认的fetch处理函数（PDF6-2节 "入口文件规范"）
 main = "main.js"
+
 # 兼容性日期（设定运行时兼容版本，使用部署前7天内的日期）
 # 说明：不可使用未来日期，否则会导致部署失败（PDF6-4节 "运行时兼容性"）
 compatibility_date = "2025-08-06"
+
 # ==================================================
 # 构建配置（支持Python桥接脚本部署，PDF7-2节 "跨语言构建流程"）
 # ==================================================
@@ -17,13 +26,15 @@ compatibility_date = "2025-08-06"
 # 构建命令（安装依赖并复制Python桥接脚本到构建目录）
 # 执行逻辑：先安装Node.js依赖，再将Python脚本复制到dist输出目录
 command = "npm install && cp akshare_etf_fetcher.py ./dist/"
+
 [build.upload]
 # 输出格式（Cloudflare Workers标准格式）
 format = "service-worker"
 # 需包含的文件（Python桥接脚本必须加入，否则运行时无法调用）
-include = ["akshare_etf_fetcher.py", "config.json"] # 补充配置文件确保完整
+include = ["akshare_etf_fetcher.py", "config.json", "wrangler.toml"]  # 新增配置文件自身
 # 需排除的文件（过滤编译缓存和无用文件，减小部署体积）
 exclude = ["*.pyc", "__pycache__/", "*.log", "node_modules/**/*.md"]
+
 # ==================================================
 # 环境变量配置（与Python桥接逻辑联动，PDF8-1节 "环境变量管理"）
 # ==================================================
@@ -35,8 +46,9 @@ PYTHON_EXEC_TIMEOUT = 20000
 # 桥接日志标记（用于日志过滤和检索，统一前缀便于排查问题）
 BRIDGE_LOG_TAG = "[Python桥接]"
 # 补充必要的默认配置（避免运行时缺少变量导致崩溃）
-DEFAULT_ETF_POOL_SIZE = 20 # 默认股票池容量
-DATA_REFRESH_INTERVAL = 3600 # 数据刷新间隔（秒）
+DEFAULT_ETF_POOL_SIZE = 20  # 默认股票池容量
+DATA_REFRESH_INTERVAL = 3600  # 数据刷新间隔（秒）
+
 # ==================================================
 # 日志配置（PDF9-2节 "生产环境日志规范"）
 # ==================================================
@@ -45,11 +57,13 @@ DATA_REFRESH_INTERVAL = 3600 # 数据刷新间隔（秒）
 enabled = true
 # 日志级别（生产环境建议使用info，避免debug级日志占用资源）
 level = "info"
+
 [observability.logs.event_rules]
 # 桥接操作日志规则（100%采样确保关键操作不丢失）
 bridge_operations = { filter = "event.message contains BRIDGE_LOG_TAG", sample_rate = 1.0 }
 # 错误日志规则（针对错误日志单独配置，确保所有错误都被记录）
 error_tracking = { filter = "event.level == 'error'", sample_rate = 1.0 }
+
 # ==================================================
 # 定时触发器配置（PDF10-1节 "定时任务调度"）
 # ==================================================
@@ -60,10 +74,11 @@ error_tracking = { filter = "event.level == 'error'", sample_rate = 1.0 }
 # 2. 周一至周五 06:00 UTC → 北京时间14:00 执行策略
 # 3. 周五 08:00 UTC → 北京时间16:00 更新股票池
 crons = [
-"0 3 * * 1-5",
-"0 6 * * 1-5",
-"0 8 * * 5"
+  "0 3 * * 1-5",
+  "0 6 * * 1-5",
+  "0 8 * * 5"
 ]
+
 # ==================================================
 # 运行时配置（PDF6-5节 "资源配额管理"）
 # ==================================================
@@ -74,6 +89,7 @@ memory = 256
 persistent_connections = true
 # 补充CPU时间限制（默认60秒，避免超时被强制终止）
 cpu_time = 60000
+
 # ==================================================
 # 开发环境配置（仅本地开发生效，不影响生产部署）
 # ==================================================
